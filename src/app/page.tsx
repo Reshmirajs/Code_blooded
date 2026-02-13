@@ -5,6 +5,12 @@ import { Button } from "@/components/ui/button";
 import { ArrowRight, Sparkles, Music, Users, Palette, BookOpen, Layers, Zap } from "lucide-react";
 
 export default function Home() {
+  const router = useRouter();
+
+  useEffect(() => {
+    router.push('/journal/demo');
+  }, [router]);
+
   return (
     <div className="flex flex-col min-h-screen bg-[#fdfbf7] overflow-x-hidden selection:bg-purple-100 selection:text-purple-900 bg-grain">
 
