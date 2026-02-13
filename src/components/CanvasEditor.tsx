@@ -9,6 +9,7 @@ interface CanvasEditorProps {
     pageId: string;
     activeTool: string;
     toolPayload?: any;
+    activePageId?: string;
     width?: number;
     height?: number;
     color?: string;
@@ -20,6 +21,7 @@ export default function CanvasEditor({
     pageId,
     activeTool,
     toolPayload,
+    activePageId,
     width = 450,
     height = 650,
     color = '#000000',
@@ -29,6 +31,8 @@ export default function CanvasEditor({
     const fabricRef = useRef<any>(null);
     const [fabricCanvas, setFabricCanvas] = useState<any>(null);
     const [isReady, setIsReady] = useState(false);
+    const [history, setHistory] = useState<string[]>([]);
+    const prevToolRef = useRef<string | null>(null);
 
     const { saveCanvas, isRemoteUpdate } = useCollaboration(bookId, pageId, fabricCanvas);
 
@@ -51,6 +55,18 @@ export default function CanvasEditor({
                     isDrawingMode: false,
                 });
 
+                // ensure a pencil brush exists for drawing & erasing
+                try {
+                    const Pencil = (fabric as any).PencilBrush || fabric.PencilBrush;
+                    if (Pencil) {
+                        canvas.freeDrawingBrush = new Pencil(canvas);
+                        canvas.freeDrawingBrush.width = brushWidth;
+                        canvas.freeDrawingBrush.color = color;
+                    }
+                } catch (e) {
+                    // ignore if brush type not found
+                }
+
                 setFabricCanvas(canvas);
                 setIsReady(true);
             } catch (e) {
@@ -69,17 +85,24 @@ export default function CanvasEditor({
         };
     }, []);
 
-    // Handle Save Events
+    // Handle History and Save Events
     useEffect(() => {
         if (!fabricCanvas) return;
 
         const handleSave = () => {
-            if (!isRemoteUpdate.current) saveCanvas();
+            if (!isRemoteUpdate.current) {
+                const json = JSON.stringify(fabricCanvas.toJSON());
+                setHistory(prev => {
+                    const newHistory = [...prev, json];
+                    if (newHistory.length > 20) return newHistory.slice(1);
+                    return newHistory;
+                });
+                saveCanvas();
+            }
         };
 
         const handleObjectAdded = (e: any) => {
-            // Prevent recursive saving when loading from JSON
-            if (!isRemoteUpdate.current) saveCanvas();
+            if (!isRemoteUpdate.current) handleSave();
         };
 
         fabricCanvas.on('object:modified', handleSave);
@@ -115,12 +138,13 @@ export default function CanvasEditor({
                     fabricCanvas.remove(...activeObjects);
                     fabricCanvas.discardActiveObject();
                     fabricCanvas.renderAll();
-                    saveCanvas();
+                    // handleSave() is called by object:removed (if active)
                 }
             }
         };
 
         window.addEventListener('keydown', handleKeyDown);
+
 
         // Drag and Drop support
         const handleDragOver = (e: DragEvent) => {
@@ -152,7 +176,7 @@ export default function CanvasEditor({
                         img.scaleToWidth(150);
                         fabricCanvas.add(img);
                         fabricCanvas.setActiveObject(img);
-                        saveCanvas();
+                        // handleSave() is called by object:added
                     });
                 };
                 reader.readAsDataURL(file);
@@ -179,6 +203,7 @@ export default function CanvasEditor({
                 fabricCanvas.setActiveObject(text);
                 text.enterEditing();
                 text.selectAll();
+                return;
             } else if (activeTool === 'image') {
                 if (options.target) return;
                 const input = document.createElement('input');
@@ -204,7 +229,6 @@ export default function CanvasEditor({
                             img.scaleToWidth(150);
                             fabricCanvas.add(img);
                             fabricCanvas.setActiveObject(img);
-                            saveCanvas();
                         });
                     };
                     reader.readAsDataURL(file);
@@ -218,6 +242,7 @@ export default function CanvasEditor({
                     strokeWidth: brushWidth,
                     left: pointer.x,
                     top: pointer.y,
+                    selectable: true,
                 });
                 fabricCanvas.add(circle);
                 fabricCanvas.setActiveObject(circle);
@@ -230,6 +255,7 @@ export default function CanvasEditor({
                     strokeWidth: brushWidth,
                     left: pointer.x,
                     top: pointer.y,
+                    selectable: true,
                 });
                 fabricCanvas.add(rect);
                 fabricCanvas.setActiveObject(rect);
@@ -238,17 +264,30 @@ export default function CanvasEditor({
 
         if (activeTool === 'brush') {
             fabricCanvas.isDrawingMode = true;
+            // use pencil brush with normal draw composite
+            try {
+                const Pencil = (fabricRef.current as any).PencilBrush || fabricRef.current.PencilBrush;
+                fabricCanvas.freeDrawingBrush = new Pencil(fabricCanvas);
+            } catch {}
             fabricCanvas.freeDrawingBrush.width = brushWidth;
             fabricCanvas.freeDrawingBrush.color = color;
+            if (fabricCanvas.freeDrawingBrush) fabricCanvas.freeDrawingBrush.globalCompositeOperation = 'source-over';
         } else if (activeTool === 'eraser') {
             fabricCanvas.isDrawingMode = true;
-            fabricCanvas.freeDrawingBrush.width = brushWidth * 4;
-            fabricCanvas.freeDrawingBrush.color = '#fdfbf7';
+            // create an eraser-like brush using destination-out composite
+            try {
+                const Pencil = (fabricRef.current as any).PencilBrush || fabricRef.current.PencilBrush;
+                fabricCanvas.freeDrawingBrush = new Pencil(fabricCanvas);
+            } catch {}
+            fabricCanvas.freeDrawingBrush.width = Math.max(4, brushWidth * 2);
+            // set composite operation to erase
+            if (fabricCanvas.freeDrawingBrush) fabricCanvas.freeDrawingBrush.globalCompositeOperation = 'destination-out';
         } else if (['text', 'image', 'circle', 'rect'].includes(activeTool)) {
             fabricCanvas.defaultCursor = 'crosshair';
             fabricCanvas.on('mouse:down', handleMouseDown);
         } else if (activeTool === 'sticker') {
-            if (toolPayload) {
+            const isVisible = fabricCanvas.getElement().offsetParent !== null;
+            if (toolPayload && isVisible) {
                 const sticker = new fabric.IText(toolPayload, {
                     left: width / 2 - 40 + (Math.random() * 80),
                     top: height / 2 - 40 + (Math.random() * 80),
@@ -263,20 +302,37 @@ export default function CanvasEditor({
                 });
                 fabricCanvas.add(sticker);
                 fabricCanvas.setActiveObject(sticker);
-                saveCanvas();
             }
         } else if (activeTool === 'clear') {
-            fabricCanvas.clear();
-            fabricCanvas.backgroundColor = 'transparent';
-            saveCanvas();
+            const isVisible = fabricCanvas.getElement().offsetParent !== null;
+            if (isVisible) {
+                fabricCanvas.clear();
+                fabricCanvas.backgroundColor = 'transparent';
+                saveCanvas();
+            }
+        } else if (activeTool === 'undo') {
+            const isVisible = fabricCanvas.getElement().offsetParent !== null;
+            if (isVisible && history.length > 0) {
+                const lastState = history[history.length - 2] || '{}';
+                isRemoteUpdate.current = true;
+                fabricCanvas.loadFromJSON(lastState, () => {
+                    fabricCanvas.renderAll();
+                    setHistory(prev => prev.slice(0, -1));
+                    saveCanvas();
+                    setTimeout(() => isRemoteUpdate.current = false, 100);
+                });
+            }
         } else if (activeTool === 'download') {
-            const dataURL = fabricCanvas.toDataURL({ format: 'png', multiplier: 2 });
-            const link = document.createElement('a');
-            link.download = `page-${pageId}.png`;
-            link.href = dataURL;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
+            const isVisible = fabricCanvas.getElement().offsetParent !== null;
+            if (isVisible) {
+                const dataURL = fabricCanvas.toDataURL({ format: 'png', multiplier: 2 });
+                const link = document.createElement('a');
+                link.download = `page-${pageId}.png`;
+                link.href = dataURL;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            }
         }
 
         return () => {
@@ -287,10 +343,56 @@ export default function CanvasEditor({
             fabricCanvas.isDrawingMode = false;
         };
 
-    }, [activeTool, toolPayload, fabricCanvas, saveCanvas, width, height, pageId, color, brushWidth]);
+    }, [activeTool, toolPayload, activePageId, fabricCanvas, saveCanvas, width, height, pageId, color, brushWidth, history]);
+
+    // react to color/brush size changes when in drawing mode
+    useEffect(() => {
+        if (!fabricCanvas) return;
+        if (activeTool === 'brush') {
+            fabricCanvas.freeDrawingBrush.width = brushWidth;
+            fabricCanvas.freeDrawingBrush.color = color;
+            if (fabricCanvas.freeDrawingBrush) fabricCanvas.freeDrawingBrush.globalCompositeOperation = 'source-over';
+        } else if (activeTool === 'eraser') {
+            fabricCanvas.freeDrawingBrush.width = Math.max(4, brushWidth * 2);
+            if (fabricCanvas.freeDrawingBrush) fabricCanvas.freeDrawingBrush.globalCompositeOperation = 'destination-out';
+        }
+    }, [brushWidth, color, activeTool, fabricCanvas]);
+
+    // Auto-insert a text box when user selects the text tool (single insertion on tool change)
+    useEffect(() => {
+        if (!fabricCanvas || !fabricRef.current) return;
+        // only insert when this page is active
+        if (!activePageId || activePageId === 'inactive' || activePageId !== pageId) {
+            prevToolRef.current = activeTool;
+            return;
+        }
+
+        if (activeTool === 'text' && prevToolRef.current !== 'text') {
+            const fabric = fabricRef.current;
+            const text = new fabric.IText('Type...', {
+                left: width / 2 - 80,
+                top: height / 2 - 12,
+                fontFamily: 'serif',
+                fill: color,
+                fontSize: 20
+            });
+            fabricCanvas.add(text);
+            fabricCanvas.setActiveObject(text);
+            text.enterEditing();
+            text.selectAll();
+        }
+
+        prevToolRef.current = activeTool;
+    }, [activeTool, activePageId, fabricCanvas, pageId, width, height, color]);
 
     return (
-        <div className="relative w-full h-full group">
+        <div
+            className="relative w-full h-full group"
+            onPointerDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            onTouchStart={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+        >
             {!isReady && (
                 <div className="absolute inset-0 flex items-center justify-center bg-white/50 z-20">
                     <Loader2 className="animate-spin text-gray-400" />
@@ -300,3 +402,4 @@ export default function CanvasEditor({
         </div>
     );
 }
+
