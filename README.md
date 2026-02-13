@@ -50,3 +50,6 @@ A minimalist, collaborative digital journal built with Next.js, Fabric.js, and F
 - React PageFlip
 - Firebase
 - Lucide React (Icons)
+
+## Music Playlist Feature
+Work in progress.
